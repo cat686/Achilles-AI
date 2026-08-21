@@ -36,10 +36,10 @@ verify --help
 
 1. 使用 `SKILL.md` 将目标拆成原子需求和 evidence obligations；
 2. 从 README、manifest、CI 和脚本中发现 build/test/run/benchmark 命令，并记录准确来源；
-3. 初始化验证工作区，在运行实验前完成 verification plan；
-4. 优先执行项目已有测试，必要时再设计 requirement-derived acceptance experiments；
-5. Generated tests 只能写入 `.verification/generated/`；
-6. 生成并检查 JSON 与 Markdown 报告。
+3. 初始化验证工作区，完成包含精确 argv、artifact 和 typed oracle 的 verification plan；
+4. 如需 generated acceptance test，先写入 `.verification/generated/`；
+5. 运行 `verify seal` 冻结 plan、profile、baseline、测试脚本和受保护仓库状态；
+6. 运行封存实验，生成并检查 JSON 与 Markdown 报告。
 
 全局 `--root` 参数必须放在子命令之前。在待验证仓库中运行：
 
@@ -54,6 +54,9 @@ verify init --goal "CLI --json 输出合法 JSON"
 ├── plan.json
 ├── repo_profile.json
 ├── session.json
+├── seal.json
+├── seal-summary.md
+├── ledger.json
 ├── evidence/
 ├── generated/
 ├── tmp/
@@ -61,7 +64,7 @@ verify init --goal "CLI --json 输出合法 JSON"
 └── report.md
 ```
 
-未传入 requirements 文件时，`init` 会创建一个 requirements 为空的合法 plan。Agent 应在执行任何实验前补全 `.verification/plan.json` 和 `.verification/repo_profile.json`。也可以直接提供结构化文件：
+未传入 requirements 文件时，`init` 会创建一个 requirements 为空的合法 plan。Agent 应补全 `.verification/plan.json`、`.verification/repo_profile.json` 和 generated tests，然后执行 `verify seal`。也可以直接提供结构化文件：
 
 ```bash
 verify init \
@@ -85,7 +88,17 @@ Requirement 示例：
       "type": "RUNTIME",
       "mandatory": true,
       "description": "执行 CLI 并将 stdout 解析为 JSON",
-      "planned_experiment": "运行黑盒 acceptance script"
+      "planned_experiment": "执行封存的 CLI 命令并解析 stdout",
+      "experiment": {
+        "argv": ["python", "-B", "app.py", "--json"],
+        "cwd": ".",
+        "source": "project_command",
+        "artifacts": ["app.py"]
+      },
+      "oracle": {
+        "kind": "stdout_json",
+        "expected_exit_code": 0
+      }
     }
   ]
 }
@@ -96,20 +109,15 @@ Requirement 示例：
 ### 捕获可执行证据
 
 ```bash
+verify seal
 verify run \
   --requirement R1 \
-  --obligation R1-O1 \
-  --type TEST \
-  --source existing_test \
-  --expect-exit-code 0 \
-  -- python -B -m unittest discover -s tests -v
+  --obligation R1-O1
 ```
 
-命令以 argument vector 直接启动，不经过 shell。无论命令成功还是失败，CLI 都会保存参数、工作目录、开始/结束时间、duration、exit code、stdout、stderr、环境摘要和 Git 状态。无法启动的命令会记录为 inconclusive evidence，而不会丢失。
+`run` 不接受临时命令、baseline 或 measurement；它只执行 seal 中的 argv，并由 runtime 计算 assessment。CLI 保存命令、工作目录、时间、exit code、原始 stdout/stderr、文件事件、摘要、快照和 Git 状态。无法启动或无法监控的命令会记录为 inconclusive evidence。
 
-退出码为零本身不是需求成立的证据。未提供 `--expect-exit-code` 时，证据会保持 `INCONCLUSIVE`。只有当命令本身是有效的 requirement-derived oracle 时，才应声明预期退出码。
-
-`DIFFERENTIAL` evidence 还必须通过 `--baseline` 标明可信基线；`PERFORMANCE` evidence 必须通过 `--measurement` 提供 JSON，其中包含 `threshold`、`observed_value`、`measurement_method` 和 `number_of_runs`。
+Artifact schema v1 支持四类 oracle：`exit_code`、`stdout_json`、`differential` 和 `performance`。差分 baseline 在 seal 时计算 SHA-256；性能数据必须由命令通过 stdout JSON 输出，runtime 按 JSON Pointer、operator、threshold 和 minimum runs 判断，不能在运行后手工声明结果。
 
 ### 捕获静态证据
 
@@ -117,14 +125,11 @@ verify run \
 verify record \
   --requirement R2 \
   --obligation R2-O1 \
-  --type STATIC \
-  --source README.md \
-  --line 20-28 \
   --description "README 记录了 --json 参数" \
   --assessment SUPPORTS
 ```
 
-静态证据会记录文件 SHA-256。`HUMAN` 和 `UNKNOWN` evidence 不允许标记为 `SUPPORTS`，从而避免在缺少可靠机器 oracle 时制造自动 PASS。
+STATIC 的 source path 和 line range 必须在 plan 中预先声明并封存。静态证据记录文件 SHA-256；`HUMAN` 和 `UNKNOWN` evidence 不允许标记为 `SUPPORTS`。
 
 ### 生成和检查结论
 
@@ -139,9 +144,9 @@ Overall verdict 依据 MUST requirements，而不是多数投票：优先级依�
 
 ### 完整性模型
 
-Verification 阶段对项目文件默认只读。CLI 自身只写入 `.verification/**`。`init` 会记录初始 Git 状态，并为所有非 `.git`、非 `.verification` 文件计算哈希；`report` 会重复检查。任何新增、修改或删除的非 `.verification/` 路径都会在报告中显著标记。
+每次实验前后都会计算快照，并在命令运行期间使用原生文件事件监控。Git 仓库保护所有 tracked 文件、封存 artifact 与 `.verification/**`；非 Git 仓库保护 seal 时已存在的文件。受保护文件即使修改后恢复也会使该 evidence 变为 `INCONCLUSIVE`。未跟踪构建产物允许生成，但会列入报告。
 
-如果需求证据原本足以 PASS，但初始化快照缺失或项目路径发生变化，overall verdict 会降为 `UNKNOWN`，而不是输出不安全的 PASS。验证过程中不得修改 production code、existing tests、expected output、threshold、baseline 或 CI；如果必须修改项目才能构造 oracle，应输出 UNKNOWN 并说明原因。
+Plan、profile、baseline、generated test、stdout、stderr、事件日志和 evidence JSON 都绑定 SHA-256；`ledger.json` 维护 evidence 哈希链。任何漂移都会让 `status` 显示 `STALE`，并阻止旧 PASS。旧 artifact schema v0 只允许审计展示，整体 verdict 强制为 `UNKNOWN`。
 
 ### Demo
 
@@ -161,13 +166,13 @@ Runner 会将 fixture 复制到临时目录，完整执行 goal → plan → evi
 
 ### 测试
 
-测试套件仅使用 Python 标准库：
+测试套件使用 `unittest`，并通过 `watchdog` 验证跨平台文件事件：
 
 ```bash
 python -B -m unittest discover -s tests -v
 ```
 
-测试覆盖 schema 拒绝逻辑、command capture、命令启动失败、stdout/stderr 持久化、exit code、duration、Git state、静态文件哈希、obligation 关联、四种 verdict 规则、CLI 流程和仓库完整性检测。
+测试覆盖 seal 漂移、四类 oracle、command capture、瞬时文件修改、构建产物、payload/ledger 篡改、legacy 降级、CLI 流程和 verdict 规则。
 
 ---
 
@@ -205,10 +210,10 @@ For development without installation, set `PYTHONPATH=src` and use `python -m go
 
 1. Use `SKILL.md` to turn the goal into atomic requirements and evidence obligations.
 2. Discover build/test/run/benchmark commands from repository documentation, manifests, CI, and scripts; record their exact sources.
-3. Initialize the verification workspace and complete the verification plan before executing experiments.
-4. Run existing project tests first, then design requirement-derived acceptance experiments if needed.
-5. Write generated tests only under `.verification/generated/`.
-6. Generate and inspect the JSON and Markdown reports.
+3. Initialize the workspace and complete a plan containing exact argv, artifacts, and typed oracles.
+4. Create any generated acceptance tests under `.verification/generated/` before approval.
+5. Run `verify seal` to freeze the plan, profile, baselines, tests, and protected repository state.
+6. Execute sealed experiments, then inspect the JSON and Markdown reports.
 
 The global `--root` option must appear before the subcommand. From the repository being verified:
 
@@ -223,6 +228,9 @@ This creates:
 ├── plan.json
 ├── repo_profile.json
 ├── session.json
+├── seal.json
+├── seal-summary.md
+├── ledger.json
 ├── evidence/
 ├── generated/
 ├── tmp/
@@ -230,7 +238,7 @@ This creates:
 └── report.md
 ```
 
-Without a requirements file, `init` creates a valid plan with an empty requirements array. The agent must complete `.verification/plan.json` and `.verification/repo_profile.json` before running experiments. Structured files can also be supplied directly:
+Without a requirements file, `init` creates a valid plan with an empty requirements array. Complete the plan, profile, and generated tests, then run `verify seal`. Structured files can also be supplied directly:
 
 ```bash
 verify init \
@@ -254,7 +262,17 @@ A requirement has this shape:
       "type": "RUNTIME",
       "mandatory": true,
       "description": "Execute the CLI and parse stdout as JSON",
-      "planned_experiment": "Run a black-box acceptance script"
+      "planned_experiment": "Execute the sealed CLI and parse stdout",
+      "experiment": {
+        "argv": ["python", "-B", "app.py", "--json"],
+        "cwd": ".",
+        "source": "project_command",
+        "artifacts": ["app.py"]
+      },
+      "oracle": {
+        "kind": "stdout_json",
+        "expected_exit_code": 0
+      }
     }
   ]
 }
@@ -265,20 +283,15 @@ Supported obligation types are `STATIC`, `BUILD`, `TEST`, `RUNTIME`, `DIFFERENTI
 ### Capture executable evidence
 
 ```bash
+verify seal
 verify run \
   --requirement R1 \
-  --obligation R1-O1 \
-  --type TEST \
-  --source existing_test \
-  --expect-exit-code 0 \
-  -- python -B -m unittest discover -s tests -v
+  --obligation R1-O1
 ```
 
-The command is launched as an argument vector without a shell. Its arguments, working directory, timestamps, duration, exit code, stdout, stderr, environment summary, and Git state are persisted whether it succeeds or fails. A command that cannot start is recorded as inconclusive evidence rather than lost.
+`run` accepts no ad-hoc command, baseline, or measurement. It executes only the sealed argv, and the runtime computes the assessment. Command metadata, raw stdout/stderr, filesystem events, digests, snapshots, and Git state are persisted. An unstartable or unmonitorable command remains inconclusive.
 
-Exit code zero alone is not proof. Without `--expect-exit-code`, evidence remains `INCONCLUSIVE`. Supply an expected exit code only when the command itself is a valid requirement-derived oracle.
-
-`DIFFERENTIAL` evidence also requires `--baseline` to identify a trustworthy baseline. `PERFORMANCE` evidence requires `--measurement` pointing to JSON with `threshold`, `observed_value`, `measurement_method`, and `number_of_runs`.
+Artifact schema v1 supports `exit_code`, `stdout_json`, `differential`, and `performance` oracles. Differential baselines are hashed at seal time. Performance measurements must come from stdout JSON and are evaluated by the runtime using JSON pointers, an operator, threshold, and minimum run count.
 
 ### Capture static evidence
 
@@ -286,14 +299,11 @@ Exit code zero alone is not proof. Without `--expect-exit-code`, evidence remain
 verify record \
   --requirement R2 \
   --obligation R2-O1 \
-  --type STATIC \
-  --source README.md \
-  --line 20-28 \
   --description "README documents --json" \
   --assessment SUPPORTS
 ```
 
-Static records include a SHA-256 file hash. `HUMAN` and `UNKNOWN` evidence cannot be marked `SUPPORTS`, preventing an automatic PASS where no reliable machine oracle exists.
+STATIC source paths and line ranges are declared in the plan before sealing. Static records include a SHA-256 file hash. `HUMAN` and `UNKNOWN` evidence cannot be marked `SUPPORTS`.
 
 ### Generate and inspect verdicts
 
@@ -308,9 +318,9 @@ Overall verdicts follow MUST requirements, not majority vote: `FAIL` takes prece
 
 ### Integrity model
 
-Verification is read-only for project files by default. The CLI itself writes only `.verification/**`. `init` records the initial Git state and hashes every non-`.git`, non-`.verification` file; `report` repeats both checks. Added, modified, or deleted paths outside `.verification/` are shown prominently.
+Every experiment takes before/after snapshots and uses native filesystem events while the child process runs. Git repositories protect tracked files, sealed artifacts, and `.verification/**`; non-Git repositories protect every file that existed at seal time. A protected file modified and then restored still makes the evidence inconclusive. New untracked build outputs are allowed but reported.
 
-If requirement evidence would otherwise pass but the initialization snapshot is missing or project paths changed, the overall result becomes `UNKNOWN` rather than an unsafe PASS. Do not alter production code, existing tests, expected output, thresholds, baselines, or CI during verification. If an acceptance oracle requires changing the project, report UNKNOWN and explain why.
+Plan, profile, baseline, generated test, stdout, stderr, event-log, and evidence digests are bound through `seal.json` and the evidence hash chain in `ledger.json`. Drift makes `status` report `STALE` and prevents an old PASS. Artifact schema v0 remains readable for audit, but its overall verdict is forced to `UNKNOWN`.
 
 ### Demos
 
@@ -330,10 +340,10 @@ The runner copies each fixture to a temporary directory, performs the complete g
 
 ### Tests
 
-The test suite uses only the Python standard library:
+The test suite uses `unittest` and `watchdog` for cross-platform filesystem events:
 
 ```bash
 python -B -m unittest discover -s tests -v
 ```
 
-It covers schema rejection, command capture, command-launch failure, stdout/stderr persistence, exit codes, durations, Git state, static hashing, obligation association, all verdict rules, CLI flows, and repository-integrity detection.
+It covers seal drift, all four oracle kinds, command capture, transient source changes, generated build output, payload/ledger tampering, legacy downgrade, CLI flows, and verdict aggregation.

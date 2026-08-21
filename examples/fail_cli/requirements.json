@@ -11,9 +11,18 @@
         "type": "TEST",
         "mandatory": true,
         "description": "A black-box test executes --json and parses stdout",
-        "planned_experiment": "Run the existing test_acceptance.py suite"
+        "planned_experiment": "Run the existing test_acceptance.py suite",
+        "experiment": {
+          "argv": ["python", "-B", "test_acceptance.py"],
+          "cwd": ".",
+          "source": "existing_test",
+          "artifacts": ["test_acceptance.py"]
+        },
+        "oracle": {
+          "kind": "exit_code",
+          "expected": 0
+        }
       }
     ]
   }
 ]
-

@@ -257,3 +257,6 @@ def record_static_evidence(
     save_evidence(root, value)
     return value
 
+
+# Public imports now resolve to the sealed artifact-schema-v1 implementation.
+from .capture_v1 import *  # noqa: E402,F401,F403

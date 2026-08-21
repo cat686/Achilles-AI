@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import io
 import json
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +17,7 @@ class CliTests(unittest.TestCase):
     def test_init_run_status_and_report_end_to_end(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            (root / "oracle.txt").write_text("sealed oracle artifact\n", encoding="utf-8")
             requirements_path = root / "requirements.json"
             requirements_path.write_text(json.dumps([requirement()]), encoding="utf-8")
             output = io.StringIO()
@@ -36,6 +36,7 @@ class CliTests(unittest.TestCase):
                     ),
                     0,
                 )
+                self.assertEqual(main(["--root", str(root), "seal"]), 0)
                 self.assertEqual(
                     main(
                         [
@@ -46,15 +47,6 @@ class CliTests(unittest.TestCase):
                             "R1",
                             "--obligation",
                             "R1-O1",
-                            "--type",
-                            "TEST",
-                            "--expect-exit-code",
-                            "0",
-                            "--",
-                            sys.executable,
-                            "-B",
-                            "-c",
-                            "print('accepted')",
                         ]
                     ),
                     0,
@@ -78,6 +70,10 @@ class CliTests(unittest.TestCase):
                 0,
             )
             self.assertEqual(
+                main(["--root", str(root), "seal"]),
+                0,
+            )
+            self.assertEqual(
                 main(
                     [
                         "--root",
@@ -87,12 +83,6 @@ class CliTests(unittest.TestCase):
                         "R1",
                         "--obligation",
                         "R1-O1",
-                        "--type",
-                        "STATIC",
-                        "--source",
-                        "README.md",
-                        "--line",
-                        "1",
                         "--description",
                         "Feature is documented",
                         "--assessment",
@@ -105,12 +95,14 @@ class CliTests(unittest.TestCase):
     def test_run_rejects_unknown_requirement(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            (root / "oracle.txt").write_text("sealed oracle artifact\n", encoding="utf-8")
             requirements_path = root / "requirements.json"
             requirements_path.write_text(json.dumps([requirement()]), encoding="utf-8")
             self.assertEqual(
                 main(["--root", str(root), "init", "--goal", "Goal", "--requirements", str(requirements_path)]),
                 0,
             )
+            self.assertEqual(main(["--root", str(root), "seal"]), 0)
             errors = io.StringIO()
             with contextlib.redirect_stderr(errors):
                 result = main(
@@ -122,13 +114,6 @@ class CliTests(unittest.TestCase):
                         "R9",
                         "--obligation",
                         "R9-O1",
-                        "--type",
-                        "TEST",
-                        "--",
-                        sys.executable,
-                        "-B",
-                        "-c",
-                        "pass",
                     ]
                 )
             self.assertEqual(result, 2)
@@ -137,4 +122,3 @@ class CliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

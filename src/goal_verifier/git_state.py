@@ -45,6 +45,17 @@ def capture_git_state(root: Path) -> dict[str, Any]:
     }
 
 
+def capture_tracked_paths(root: Path) -> list[str] | None:
+    """Return normalized tracked paths, or None outside a usable Git worktree."""
+    state = capture_git_state(root)
+    if not state["available"]:
+        return None
+    result = _git(root.resolve(), "ls-files", "-z")
+    if result.returncode != 0:
+        return None
+    return sorted(item.replace("\\", "/") for item in result.stdout.split("\0") if item)
+
+
 def _excluded(relative: Path) -> bool:
     return bool(relative.parts) and relative.parts[0] in {".git", ".verification"}
 
@@ -78,6 +89,36 @@ def capture_file_snapshot(root: Path) -> dict[str, Any]:
     return {"algorithm": "sha256", "files": files, "errors": errors}
 
 
+def capture_paths_snapshot(root: Path, relative_paths: Iterable[str]) -> dict[str, Any]:
+    """Hash an explicit protected-path set, including missing-path state."""
+    root = root.resolve()
+    files: dict[str, str] = {}
+    missing: list[str] = []
+    errors: list[str] = []
+    for relative in sorted(set(relative_paths)):
+        candidate = (root / relative).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            errors.append(f"{relative}: path escapes repository root")
+            continue
+        if not candidate.exists():
+            missing.append(relative)
+            continue
+        if not candidate.is_file():
+            errors.append(f"{relative}: protected path is not a regular file")
+            continue
+        try:
+            digest = hashlib.sha256()
+            with candidate.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            files[relative] = digest.hexdigest()
+        except OSError as exc:
+            errors.append(f"{relative}: {exc}")
+    return {"algorithm": "sha256", "files": files, "missing": missing, "errors": errors}
+
+
 def compare_snapshots(before: dict[str, Any], after: dict[str, Any]) -> dict[str, list[str]]:
     before_files = before.get("files", {})
     after_files = after.get("files", {})
@@ -92,4 +133,3 @@ def compare_snapshots(before: dict[str, Any], after: dict[str, Any]) -> dict[str
 
 def has_changes(changes: dict[str, list[str]]) -> bool:
     return any(changes.get(kind) for kind in ("added", "modified", "deleted"))
-

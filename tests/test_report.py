@@ -6,8 +6,9 @@ import unittest
 from pathlib import Path
 
 from goal_verifier.capture import capture_command
-from goal_verifier.evidence import read_json, verification_path, write_json
+from goal_verifier.evidence import load_profile, read_json, verification_path, write_json
 from goal_verifier.report import calculate_overall, generate_reports
+from goal_verifier.sealing import load_seal
 
 from tests.helpers import initialize_root, obligation, requirement
 
@@ -37,6 +38,16 @@ class OverallVerdictTests(unittest.TestCase):
 
 
 class ReportTests(unittest.TestCase):
+    def _capture(self, root: Path, plan: dict, requirement_id: str, obligation_id: str) -> dict:
+        return capture_command(
+            root=root,
+            plan=plan,
+            profile=load_profile(root),
+            seal=load_seal(root),
+            requirement_id=requirement_id,
+            obligation_id=obligation_id,
+        )
+
     def test_pass_and_fail_trace_to_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -44,27 +55,20 @@ class ReportTests(unittest.TestCase):
                 root,
                 [
                     requirement("R1", obligations=[obligation("R1-O1", "TEST")]),
-                    requirement("R2", obligations=[obligation("R2-O1", "TEST")]),
+                    requirement(
+                        "R2",
+                        obligations=[
+                            obligation(
+                                "R2-O1",
+                                "TEST",
+                                argv=[sys.executable, "-B", "-c", "raise SystemExit(1)"],
+                            )
+                        ],
+                    ),
                 ],
             )
-            capture_command(
-                root=root,
-                plan=plan,
-                requirement_id="R1",
-                obligation_id="R1-O1",
-                verification_type="TEST",
-                command=[sys.executable, "-B", "-c", "pass"],
-                expected_exit_code=0,
-            )
-            capture_command(
-                root=root,
-                plan=plan,
-                requirement_id="R2",
-                obligation_id="R2-O1",
-                verification_type="TEST",
-                command=[sys.executable, "-B", "-c", "raise SystemExit(1)"],
-                expected_exit_code=0,
-            )
+            self._capture(root, plan, "R1", "R1-O1")
+            self._capture(root, plan, "R2", "R2-O1")
             report = generate_reports(root, plan)
             by_id = {item["id"]: item for item in report["requirements"]}
             self.assertEqual(by_id["R1"]["verdict"], "PASS")
@@ -87,15 +91,7 @@ class ReportTests(unittest.TestCase):
                     )
                 ],
             )
-            capture_command(
-                root=root,
-                plan=plan,
-                requirement_id="R1",
-                obligation_id="R1-O1",
-                verification_type="TEST",
-                command=[sys.executable, "-B", "-c", "pass"],
-                expected_exit_code=0,
-            )
+            self._capture(root, plan, "R1", "R1-O1")
             report = generate_reports(root, plan)
             self.assertEqual(report["requirements"][0]["verdict"], "PARTIAL")
             self.assertEqual(report["overall_verdict"], "PARTIAL")
@@ -116,23 +112,15 @@ class ReportTests(unittest.TestCase):
             source = root / "production.py"
             source.write_text("value = 1\n", encoding="utf-8")
             plan = initialize_root(root, [requirement()])
-            capture_command(
-                root=root,
-                plan=plan,
-                requirement_id="R1",
-                obligation_id="R1-O1",
-                verification_type="TEST",
-                command=[sys.executable, "-B", "-c", "pass"],
-                expected_exit_code=0,
-            )
+            self._capture(root, plan, "R1", "R1-O1")
             source.write_text("value = 2\n", encoding="utf-8")
             report = generate_reports(root, plan)
-            self.assertEqual(report["requirements_verdict"], "PASS")
+            self.assertEqual(report["requirements_verdict"], "UNKNOWN")
             self.assertEqual(report["overall_verdict"], "UNKNOWN")
             self.assertTrue(report["integrity"]["violation"])
             self.assertEqual(report["integrity"]["non_verification_changes"]["modified"], ["production.py"])
             markdown = (verification_path(root) / "report.md").read_text(encoding="utf-8")
-            self.assertIn("INTEGRITY WARNING", markdown)
+            self.assertIn("State: **STALE**", markdown)
             self.assertIn("production.py", markdown)
 
     def test_mismatched_evidence_link_is_excluded_and_blocks_pass(self) -> None:
@@ -145,15 +133,7 @@ class ReportTests(unittest.TestCase):
                     requirement("R2", priority="SHOULD", obligations=[obligation("R2-O1", "TEST")]),
                 ],
             )
-            captured = capture_command(
-                root=root,
-                plan=plan,
-                requirement_id="R1",
-                obligation_id="R1-O1",
-                verification_type="TEST",
-                command=[sys.executable, "-B", "-c", "pass"],
-                expected_exit_code=0,
-            )
+            captured = self._capture(root, plan, "R1", "R1-O1")
             evidence_path = verification_path(root) / "evidence" / "E0001.json"
             captured["requirement_id"] = "R2"
             write_json(evidence_path, captured)

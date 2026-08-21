@@ -313,3 +313,7 @@ def generate_reports(root: Path, plan: dict[str, Any]) -> dict[str, Any]:
     write_json(directory / "report.json", report)
     (directory / "report.md").write_text(render_markdown(report), encoding="utf-8", newline="\n")
     return report
+
+
+# Public imports now resolve to the artifact-schema-v1 report implementation.
+from .report_v1 import *  # noqa: E402,F401,F403

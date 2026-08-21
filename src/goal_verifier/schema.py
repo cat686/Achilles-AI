@@ -147,3 +147,8 @@ def find_obligation(plan: dict[str, Any], requirement_id: str, obligation_id: st
         raise SchemaError(f"obligation {obligation_id} does not belong to requirement {requirement_id}")
     raise SchemaError(f"requirement not found in plan: {requirement_id}")
 
+
+# Artifact schema v1 supersedes the Version 0 definitions above. Keeping this
+# compatibility module avoids changing public imports while legacy artifacts
+# remain readable by the v1 implementation.
+from .schema_v1 import *  # noqa: E402,F401,F403

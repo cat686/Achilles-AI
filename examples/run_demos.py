@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import shutil
-import sys
 import tempfile
 from pathlib import Path
 
@@ -31,6 +30,8 @@ def run_fixture(source: Path, expected: str) -> str:
     ]
     if main(arguments) != 0:
         raise RuntimeError(f"unable to initialize {source.name}")
+    if main(["--root", str(root), "seal"]) != 0:
+        raise RuntimeError(f"unable to seal {source.name}")
     if source.name != "unknown_cli":
         result = main(
             [
@@ -41,16 +42,6 @@ def run_fixture(source: Path, expected: str) -> str:
                 "R1",
                 "--obligation",
                 "R1-O1",
-                "--type",
-                "TEST",
-                "--source",
-                "existing_test",
-                "--expect-exit-code",
-                "0",
-                "--",
-                sys.executable,
-                "-B",
-                "test_acceptance.py",
             ]
         )
         if result != 0:

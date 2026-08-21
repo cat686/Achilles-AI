@@ -1,5 +1,78 @@
 # Achilles-AI Version 0 — Codex Implementation Spec
 
+> **Artifact Schema v1 修订（Achilles-AI 0.2.0）：** 本节覆盖本文后续与 plan、CLI、oracle、evidence 和 integrity 冲突的 Version 0 描述。后续章节保留为设计历史。
+
+## V1.1 固定工作流
+
+```text
+init → complete plan/generated tests → seal → run/record → report
+```
+
+`verify seal` 是执行边界。Seal 必须发生在任何 evidence 之前，并绑定：
+
+- canonical `plan.json` 和 `repo_profile.json` SHA-256；
+- repository root、Git state、protected paths 与快照；
+- experiment artifacts、generated tests、STATIC sources 与 DIFFERENTIAL baseline 的 SHA-256；
+- exact argv、relative cwd、experiment source 和 typed oracle。
+
+Seal 后不得修改上述输入或重新封存已有 evidence 的 session。旧 artifact schema v0 可以读取，但不得继续取证，overall verdict 固定为 `UNKNOWN`。
+
+## V1.2 Executable obligation
+
+每个 BUILD/TEST/RUNTIME/DIFFERENTIAL/PERFORMANCE obligation 必须包含：
+
+```json
+{
+  "experiment": {
+    "argv": ["python", "-B", "test_acceptance.py"],
+    "cwd": ".",
+    "source": "existing_test",
+    "artifacts": ["test_acceptance.py"]
+  },
+  "oracle": {
+    "kind": "exit_code",
+    "expected": 0
+  }
+}
+```
+
+`verify run` 只接受 requirement/obligation ID，不接受临时 type、command、expected exit code、baseline 或 measurement。
+
+## V1.3 Typed oracle
+
+- `exit_code`：BUILD/TEST/RUNTIME；比较封存的 expected 与 observed exit code。
+- `stdout_json`：BUILD/TEST/RUNTIME；先比较 exit code，再要求 stdout 是单个合法 UTF-8 JSON document。
+- `differential`：仅 DIFFERENTIAL；先比较 exit code，再将 stdout 与封存 baseline 做 raw bytes 或 JSON semantic equality 比较。
+- `performance`：仅 PERFORMANCE；从 stdout JSON 的 RFC 6901 pointers 读取 metric 与 run count，校验有限数值、minimum runs，并执行 `lt/lte/gt/gte/eq` 阈值运算。
+
+Command 无法执行、monitor 失败、sealed input 漂移或 protected integrity 失败时为 `INCONCLUSIVE`；命令正常执行但不满足 oracle 时为 `CONTRADICTS`；oracle 与 integrity 同时满足时才是 `SUPPORTS`。
+
+## V1.4 Evidence digest 与 ledger
+
+每条 executable evidence 必须包含 seal、stdout、stderr、filesystem-event log、snapshot 和 artifact digests。`ledger.json` 以 seal digest 为 genesis，按 evidence 顺序维护 SHA-256 hash chain。Report 必须排除 orphan、duplicate、digest mismatch、broken-chain 或 wrong-session evidence。
+
+Report 保存当前 inputs digest。`verify status` 的状态只能是：
+
+- `UNSEALED`：v1 plan 尚未 seal；
+- `SEALED`：seal、ledger、payload 和 protected state 均有效；
+- `STALE`：输入、artifact、payload、ledger 或已有 report 已漂移；
+- `LEGACY`：artifact schema v0。
+
+`STALE`、`UNSEALED` 与 `LEGACY` 均不得展示旧 PASS。
+
+## V1.5 Per-experiment integrity
+
+每个命令执行前后必须保存 repository/protected snapshots，并在运行期间递归监听 filesystem create/modify/delete/move events：
+
+- Git repository 保护 tracked files、sealed artifacts 和 `.verification/**`；
+- 非 Git repository 保护 seal 时已存在的全部文件；
+- protected file 即使修改后恢复，evidence 仍为 `INCONCLUSIVE`；
+- child process 写入 `.verification/**` 属于 integrity violation；
+- untracked build outputs 可以新增或修改，但必须在 evidence/report 中列出；
+- native monitor 无法启动、停止失败或事件溢出时不得静默降级。
+
+本地 SHA-256 seal/ledger 用于审批边界与防误改，不构成外部签名或远程 cryptographic attestation。
+
 ## 0. 任务定义
 
 实现一个面向 AI Coding Agent 的最小可用 **Goal Verification / Independent Acceptance Testing** 原型。
@@ -731,9 +804,7 @@ verify run
 ```bash
 verify run \
   --requirement R2 \
-  --obligation R2-O1 \
-  --type TEST \
-  -- pytest tests/test_cli.py
+  --obligation R2-O1
 ```
 
 CLI 必须实际启动 subprocess。
@@ -960,8 +1031,6 @@ verify record
 verify record \
   --requirement R4 \
   --obligation R4-O1 \
-  --type STATIC \
-  --source README.md \
   --description "README documents --json option"
 ```
 
@@ -1380,6 +1449,7 @@ distributed queue
 
 ```bash
 verify init
+verify seal
 verify run
 verify record
 verify status
@@ -1448,7 +1518,7 @@ subprocess 执行必须：
 例如：
 
 ```bash
-verify run --type TEST -- pytest -q
+verify run --requirement R1 --obligation R1-O1
 ```
 
 pytest 返回 1：
@@ -1473,12 +1543,10 @@ V0 只支持简单模式。
 ```bash
 verify run \
   --requirement R5 \
-  --obligation R5-O1 \
-  --type PERFORMANCE \
-  -- ./benchmark
+  --obligation R5-O1
 ```
 
-Codex 自己负责解释 stdout。
+Runtime 根据封存的 performance oracle 解释 stdout JSON。
 
 如果 performance requirement 是：
 
@@ -1492,7 +1560,7 @@ latency < 100 ms
 threshold
 observed value
 measurement method
-number of runs if known
+number of runs
 ```
 
 如果没有可靠 benchmark：

@@ -4,16 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "achilles-ai"
-version = "0.1.0"
-description = "Achilles-AI: independent acceptance testing evidence runtime for coding agents"
+version = "0.2.0"
+description = "Achilles-AI: sealed acceptance-testing evidence runtime for coding agents"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [{name = "Achilles-AI contributors"}]
-dependencies = []
+dependencies = ["watchdog>=6,<8"]
 
 [project.scripts]
-verify = "goal_verifier.cli:main"
+verify = "goal_verifier.cli_v1:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
