@@ -4,6 +4,8 @@ __pycache__/
 .pytest_cache/
 .verification/
 examples/*/.verification/
+examples/click/
+examples/cookiecutter/
 build/
 dist/
-
+spec.md

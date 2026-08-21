@@ -1,349 +1,802 @@
 # Achilles-AI
 
-[中文](#中文) | [English](#english)
+> **Don't ask whether the coding agent is done. Ask for evidence.**
 
-## 中文
+**Achilles-AI is a goal-driven verification layer for AI Coding Agents.**
 
-Achilles-AI 是一个面向 AI Coding Agent 的最小独立验收层。它将自然语言目标拆解为原子需求和证据义务，从真实命令与仓库文件中捕获可观察事实，并生成可追踪的 `PASS`、`FAIL`、`PARTIAL` 或 `UNKNOWN` 结论。
-
-项目由两个部分组成：
-
-- [SKILL.md](SKILL.md) 是智能层，负责理解目标、发现仓库的验证入口、拆解需求和设计实验；
-- Python CLI 是精简、确定性的证据运行时，负责执行命令、保存 stdout/stderr 和运行事实、约束证据关联、评估义务覆盖情况并生成报告。
-
-
-### Achilles-AI 不是什么
-
-Achilles-AI 不是 Coding Agent、通用代码审查器、形式化验证系统，也不保证软件没有任何缺陷。Version 0 不包含 Web UI、数据库、云端执行、语言 adapter、LLM API、自动修复循环或插件框架。
-
-`PASS` 仅表示：在当前 verification plan 声明的需求范围内，已经收集到充分证据。它不表示软件在所有场景下都绝对正确。
-
-### 环境与安装
-
-- Python 3.11 或更高版本；
-- Git 可选。在 Git worktree 中会捕获 commit、dirty state 和 porcelain status；在非 Git 目录中，这些字段会明确记录为 unavailable，而不会猜测。
-
-本地安装：
-
-```bash
-python -m pip install -e .
-verify --help
-```
-
-开发时也可以不安装：设置 `PYTHONPATH=src`，并以 `python -m goal_verifier` 代替 `verify`。
-
-### 核心流程
-
-1. 使用 `SKILL.md` 将目标拆成原子需求和 evidence obligations；
-2. 从 README、manifest、CI 和脚本中发现 build/test/run/benchmark 命令，并记录准确来源；
-3. 初始化验证工作区，完成包含精确 argv、artifact 和 typed oracle 的 verification plan；
-4. 如需 generated acceptance test，先写入 `.verification/generated/`；
-5. 运行 `verify seal` 冻结 plan、profile、baseline、测试脚本和受保护仓库状态；
-6. 运行封存实验，生成并检查 JSON 与 Markdown 报告。
-
-全局 `--root` 参数必须放在子命令之前。在待验证仓库中运行：
-
-```bash
-verify init --goal "CLI --json 输出合法 JSON"
-```
-
-生成的目录结构为：
+It turns a natural-language goal into executable verification, captures real evidence, and produces a traceable:
 
 ```text
-.verification/
-├── plan.json
-├── repo_profile.json
-├── session.json
-├── seal.json
-├── seal-summary.md
-├── ledger.json
-├── evidence/
-├── generated/
-├── tmp/
-├── report.json
-└── report.md
+PASS / FAIL / PARTIAL / UNKNOWN
 ```
 
-未传入 requirements 文件时，`init` 会创建一个 requirements 为空的合法 plan。Agent 应补全 `.verification/plan.json`、`.verification/repo_profile.json` 和 generated tests，然后执行 `verify seal`。也可以直接提供结构化文件：
-
-```bash
-verify init \
-  --goal "CLI --json 输出合法 JSON" \
-  --requirements requirements.json \
-  --profile repo_profile.json
-```
-
-Requirement 示例：
-
-```json
-{
-  "id": "R1",
-  "text": "使用 --json 时输出合法 JSON",
-  "source_text": "新增 --json 输出",
-  "priority": "MUST",
-  "notes": "",
-  "obligations": [
-    {
-      "id": "R1-O1",
-      "type": "RUNTIME",
-      "mandatory": true,
-      "description": "执行 CLI 并将 stdout 解析为 JSON",
-      "planned_experiment": "执行封存的 CLI 命令并解析 stdout",
-      "experiment": {
-        "argv": ["python", "-B", "app.py", "--json"],
-        "cwd": ".",
-        "source": "project_command",
-        "artifacts": ["app.py"]
-      },
-      "oracle": {
-        "kind": "stdout_json",
-        "expected_exit_code": 0
-      }
-    }
-  ]
-}
-```
-
-支持的 obligation types：`STATIC`、`BUILD`、`TEST`、`RUNTIME`、`DIFFERENTIAL`、`PERFORMANCE`、`HUMAN`、`UNKNOWN`。优先级包括 `MUST`、`SHOULD`、`MAY`。
-
-### 捕获可执行证据
-
-```bash
-verify seal
-verify run \
-  --requirement R1 \
-  --obligation R1-O1
-```
-
-`run` 不接受临时命令、baseline 或 measurement；它只执行 seal 中的 argv，并由 runtime 计算 assessment。CLI 保存命令、工作目录、时间、exit code、原始 stdout/stderr、文件事件、摘要、快照和 Git 状态。无法启动或无法监控的命令会记录为 inconclusive evidence。
-
-Artifact schema v1 支持四类 oracle：`exit_code`、`stdout_json`、`differential` 和 `performance`。差分 baseline 在 seal 时计算 SHA-256；性能数据必须由命令通过 stdout JSON 输出，runtime 按 JSON Pointer、operator、threshold 和 minimum runs 判断，不能在运行后手工声明结果。
-
-### 捕获静态证据
-
-```bash
-verify record \
-  --requirement R2 \
-  --obligation R2-O1 \
-  --description "README 记录了 --json 参数" \
-  --assessment SUPPORTS
-```
-
-STATIC 的 source path 和 line range 必须在 plan 中预先声明并封存。静态证据记录文件 SHA-256；`HUMAN` 和 `UNKNOWN` evidence 不允许标记为 `SUPPORTS`。
-
-### 生成和检查结论
-
-```bash
-verify report
-verify status
-```
-
-只有 supporting evidence 才能满足 obligation。存在明确反证时 requirement 为 `FAIL`；部分义务得到支持但 mandatory obligations 仍有缺口时为 `PARTIAL`；证据不足时为 `UNKNOWN`；所有 mandatory obligations 均被支持且不存在反证时为 `PASS`。每个 PASS 和 FAIL 都必须引用 evidence IDs。
-
-Overall verdict 依据 MUST requirements，而不是多数投票：优先级依次为 `FAIL`、`PARTIAL`、`UNKNOWN`、`PASS`。SHOULD/MAY 的结果会出现在报告中，但不会直接导致整体 FAIL。
-
-### 完整性模型
-
-每次实验前后都会计算快照，并在命令运行期间使用原生文件事件监控。Git 仓库保护所有 tracked 文件、封存 artifact 与 `.verification/**`；非 Git 仓库保护 seal 时已存在的文件。受保护文件即使修改后恢复也会使该 evidence 变为 `INCONCLUSIVE`。未跟踪构建产物允许生成，但会列入报告。
-
-Plan、profile、baseline、generated test、stdout、stderr、事件日志和 evidence JSON 都绑定 SHA-256；`ledger.json` 维护 evidence 哈希链。任何漂移都会让 `status` 显示 `STALE`，并阻止旧 PASS。旧 artifact schema v0 只允许审计展示，整体 verdict 强制为 `UNKNOWN`。
-
-### Demo
-
-`examples/` 包含三种结果：
-
-- `pass_cli`：输出合法 JSON，产生 PASS；
-- `fail_cli`：包含故意设置的单引号 JSON bug，真实测试失败并产生 FAIL；
-- `unknown_cli`：视觉质量属于 HUMAN obligation，缺少可靠机器 oracle，因此产生 UNKNOWN。
-
-安装后运行；开发模式下可先设置 `PYTHONPATH=src`：
-
-```bash
-python -B examples/run_demos.py
-```
-
-Runner 会将 fixture 复制到临时目录，完整执行 goal → plan → evidence → report 流程，校验预期 verdict，并输出报告路径。
-
-### 测试
-
-测试套件使用 `unittest`，并通过 `watchdog` 验证跨平台文件事件：
-
-```bash
-python -B -m unittest discover -s tests -v
-```
-
-测试覆盖 seal 漂移、四类 oracle、command capture、瞬时文件修改、构建产物、payload/ledger 篡改、legacy 降级、CLI 流程和 verdict 规则。
+[中文](#中文) · [English](#english)
 
 ---
 
-## English
+# 中文
 
-Achilles-AI is a minimal independent acceptance-testing layer for AI coding agents. It turns natural-language goals into atomic requirements and evidence obligations, captures observable facts from real commands and repository files, and produces traceable `PASS`, `FAIL`, `PARTIAL`, or `UNKNOWN` verdicts.
+## AI 会写代码，但它真的完成了吗？
 
-The project has two parts:
+Coding Agent 已经可以修改代码、运行测试、修复错误，然后告诉你：
 
-- [SKILL.md](SKILL.md) is the intelligence layer responsible for understanding goals, discovering repository verification interfaces, decomposing requirements, and designing experiments.
-- The Python CLI is a thin deterministic evidence runtime responsible for executing commands, persisting stdout/stderr and runtime facts, enforcing evidence links, assessing obligation coverage, and rendering reports.
+> **“Done. All tests pass.”**
 
+但：
 
-### What Achilles-AI is not
+```text
+Tests Passed ≠ Goal Satisfied
+```
 
-Achilles-AI is not a coding agent, a general code reviewer, a formal-verification system, or a guarantee of bug-free software. Version 0 has no web UI, database, cloud runner, language adapters, LLM API, automatic repair loop, or plugin framework.
+已有测试可能没有覆盖新需求，Agent 可能只检查了 happy path，也可能没有真正验证兼容性、性能或运行时行为。
 
-`PASS` means sufficient evidence was collected for the declared requirements under the current verification plan. It does **not** mean the software is universally correct.
+**Achilles-AI 解决的是 AI Coding 的最后一公里：如何验证 Agent 的“完成”声明。**
 
-### Requirements and installation
+---
 
-- Python 3.11 or newer.
-- Git is optional. In a Git worktree, commit, dirty state, and porcelain status are captured. Outside Git, those fields are explicitly recorded as unavailable rather than guessed.
+## Achilles-AI 是什么？
 
-Install locally:
+Achilles-AI 是一个面向 AI Coding Agent 的：
+
+> **目标驱动验收层（Goal-Driven Acceptance Layer）**
+
+输入一个自然语言目标：
+
+```text
+新增 --json 参数。
+
+开启后输出必须是合法 JSON。
+
+不开启时原有 CLI 行为不能变化。
+```
+
+Achilles-AI 将其转换为：
+
+```text
+Natural-language Goal
+        ↓
+Atomic Requirements
+        ↓
+Verification Experiments
+        ↓
+Real Execution
+        ↓
+Auditable Evidence
+        ↓
+PASS / FAIL / PARTIAL / UNKNOWN
+```
+
+核心不是：
+
+> 再让一个 AI 看一遍代码，然后说“看起来没问题”。
+
+而是：
+
+> **明确需要证明什么，真正执行实验，并让最终结论能够追溯到证据。**
+
+---
+
+## 为什么需要 Achilles-AI？
+
+### 1. 验证 Goal，而不只是 Tests
+
+传统 CI 回答：
+
+```text
+预先写好的测试通过了吗？
+```
+
+Achilles-AI 回答：
+
+```text
+当前代码真的满足用户刚刚提出的目标吗？
+```
+
+例如：
+
+```text
+Goal:
+新增 --json 参数，同时保持原有 CLI 行为兼容。
+```
+
+可能被拆成：
+
+```text
+R1  --json 参数存在
+    → STATIC + RUNTIME
+
+R2  --json 输出可以被 JSON parser 解析
+    → RUNTIME
+
+R3  默认行为与原版本保持兼容
+    → DIFFERENTIAL + TEST
+```
+
+即使原有 tests 全部通过，如果没有证据支持 `R3`，也不应该直接宣布任务完成。
+
+---
+
+### 2. 从 Agent Claim 到 Executable Evidence
+
+普通 Coding Agent：
+
+```text
+Write Code
+    ↓
+Run Some Tests
+    ↓
+"PASS"
+```
+
+Achilles-AI：
+
+```text
+Goal
+ ↓
+Requirements
+ ↓
+Verification Plan
+ ↓
+Real Commands
+ ↓
+stdout / stderr / exit code / timing / repo state
+ ↓
+Evidence
+ ↓
+Verdict
+```
+
+最终你得到的不是：
+
+```text
+"The agent says it works."
+```
+
+而是：
+
+```text
+R3 PASS
+  ↳ R3-O1 supported by E0006
+  ↳ R3-O2 supported by E0007
+```
+
+---
+
+### 3. 拒绝 False PASS
+
+Achilles-AI 使用四种结果：
+
+| Verdict   | 含义             |
+| --------- | -------------- |
+| `PASS`    | 当前必要验证义务已有充分证据 |
+| `FAIL`    | 存在明确失败或反例      |
+| `PARTIAL` | 只有部分必要义务得到验证   |
+| `UNKNOWN` | 当前证据不足，无法可靠判断  |
+
+对于验证系统来说：
+
+> **UNKNOWN 比 False PASS 更好。**
+
+如果环境缺失、没有可靠 baseline、无法构造 verification oracle，Achilles-AI 会保留不确定性，而不是猜一个 `PASS`。
+
+---
+
+## 适合什么场景？
+
+Achilles-AI 尤其适合具有明确 **observable behavior** 的 Coding Agent 任务。
+
+### CLI / API
+
+```text
+新增 --json 参数，并保证输出合法。
+```
+
+```text
+新增 /health endpoint，必须返回 HTTP 200。
+```
+
+### Compatibility
+
+```text
+修改实现后，原有 CLI output 不能发生变化。
+```
+
+### Numerical Computing
+
+```text
+GPU implementation 与 CPU reference 平均误差 < 1%。
+```
+
+### Performance
+
+```text
+P95 latency < 100 ms。
+```
+
+```text
+新实现吞吐量不能低于 baseline。
+```
+
+### Build / Runtime / Filesystem
+
+```text
+项目必须能够成功编译。
+```
+
+```text
+命令执行后必须生成指定目录结构。
+```
+
+---
+
+## Quick Start
+
+### 1. 安装
+
+需要：
+
+* Python 3.11+
+* Git
+
+作为 Codex Skill 安装：
 
 ```bash
-python -m pip install -e .
+git clone https://github.com/cat686/Achilles-AI.git ~/.codex/skills/achilles-ai
+python -m pip install -e ~/.codex/skills/achilles-ai
+
 verify --help
 ```
 
-For development without installation, set `PYTHONPATH=src` and use `python -m goal_verifier` in place of `verify`.
+安装后重新开启一个 Codex 对话，使 `$achilles-ai` 生效。
 
-### Core workflow
+---
 
-1. Use `SKILL.md` to turn the goal into atomic requirements and evidence obligations.
-2. Discover build/test/run/benchmark commands from repository documentation, manifests, CI, and scripts; record their exact sources.
-3. Initialize the workspace and complete a plan containing exact argv, artifacts, and typed oracles.
-4. Create any generated acceptance tests under `.verification/generated/` before approval.
-5. Run `verify seal` to freeze the plan, profile, baselines, tests, and protected repository state.
-6. Execute sealed experiments, then inspect the JSON and Markdown reports.
+### 2. 在你的项目中使用
 
-The global `--root` option must appear before the subcommand. From the repository being verified:
+进入需要验证的代码仓库：
 
 ```bash
-verify init --goal "CLI --json emits valid JSON"
+cd your-project
 ```
 
-This creates:
+然后在 Codex 中直接描述你的目标：
+
+```text
+使用 $achilles-ai 验证：
+
+目标：
+新增 --json 参数；
+开启后输出必须是合法 JSON；
+不开启时原有 CLI 行为必须保持不变。
+```
+
+Achilles-AI 会自动：
+
+```text
+Understand Goal
+      ↓
+Inspect Repository
+      ↓
+Generate Requirements
+      ↓
+Design Verification Experiments
+      ↓
+Execute Real Commands
+      ↓
+Capture Evidence
+      ↓
+Produce Verdict
+```
+
+---
+
+### 3. 查看结果
+
+```bash
+verify status
+```
+
+完整报告：
+
+```text
+.verification/report.md
+```
+
+主要验证产物：
 
 ```text
 .verification/
 ├── plan.json
-├── repo_profile.json
-├── session.json
-├── seal.json
 ├── seal-summary.md
-├── ledger.json
 ├── evidence/
-├── generated/
-├── tmp/
 ├── report.json
 └── report.md
 ```
 
-Without a requirements file, `init` creates a valid plan with an empty requirements array. Complete the plan, profile, and generated tests, then run `verify seal`. Structured files can also be supplied directly:
+通常只需要查看：
 
-```bash
-verify init \
-  --goal "CLI --json emits valid JSON" \
-  --requirements requirements.json \
-  --profile repo_profile.json
+```text
+verify status
+.verification/report.md
 ```
 
-A requirement has this shape:
+---
 
-```json
-{
-  "id": "R1",
-  "text": "Using --json emits valid JSON",
-  "source_text": "Add --json output",
-  "priority": "MUST",
-  "notes": "",
-  "obligations": [
-    {
-      "id": "R1-O1",
-      "type": "RUNTIME",
-      "mandatory": true,
-      "description": "Execute the CLI and parse stdout as JSON",
-      "planned_experiment": "Execute the sealed CLI and parse stdout",
-      "experiment": {
-        "argv": ["python", "-B", "app.py", "--json"],
-        "cwd": ".",
-        "source": "project_command",
-        "artifacts": ["app.py"]
-      },
-      "oracle": {
-        "kind": "stdout_json",
-        "expected_exit_code": 0
-      }
-    }
-  ]
-}
-```
+## 运行官方示例
 
-Supported obligation types are `STATIC`, `BUILD`, `TEST`, `RUNTIME`, `DIFFERENTIAL`, `PERFORMANCE`, `HUMAN`, and `UNKNOWN`. Priorities are `MUST`, `SHOULD`, and `MAY`.
+仓库提供 Click 和 Cookiecutter 的真实项目验证案例。
 
-### Capture executable evidence
+安装 `uv`：
 
 ```bash
-verify seal
-verify run \
-  --requirement R1 \
-  --obligation R1-O1
+python -m pip install uv
 ```
 
-`run` accepts no ad-hoc command, baseline, or measurement. It executes only the sealed argv, and the runtime computes the assessment. Command metadata, raw stdout/stderr, filesystem events, digests, snapshots, and Git state are persisted. An unstartable or unmonitorable command remains inconclusive.
-
-Artifact schema v1 supports `exit_code`, `stdout_json`, `differential`, and `performance` oracles. Differential baselines are hashed at seal time. Performance measurements must come from stdout JSON and are evaluated by the runtime using JSON pointers, an operator, threshold, and minimum run count.
-
-### Capture static evidence
+准备参考项目：
 
 ```bash
-verify record \
-  --requirement R2 \
-  --obligation R2-O1 \
-  --description "README documents --json" \
-  --assessment SUPPORTS
+python examples/setup_reference_projects.py
 ```
 
-STATIC source paths and line ranges are declared in the plan before sealing. Static records include a SHA-256 file hash. `HUMAN` and `UNKNOWN` evidence cannot be marked `SUPPORTS`.
-
-### Generate and inspect verdicts
+验证 Click：
 
 ```bash
-verify report
+cd examples/click
+```
+
+在 Codex 中输入：
+
+```text
+使用 $achilles-ai 验证：
+
+目标：在 Python 3.12 环境下，使用 uv.lock 锁定的依赖运行
+Click 的完整官方测试体系，并判断当前项目是否满足该目标。
+```
+
+然后查看：
+
+```bash
 verify status
 ```
 
-Only supporting evidence satisfies an obligation. Concrete contradictory evidence makes a requirement `FAIL`; partial support with mandatory gaps produces `PARTIAL`; insufficient evidence produces `UNKNOWN`; and support for all mandatory obligations with no contradiction produces `PASS`. Every PASS and FAIL cites evidence IDs.
+---
 
-Overall verdicts follow MUST requirements, not majority vote: `FAIL` takes precedence, then `PARTIAL`, then `UNKNOWN`, otherwise `PASS`. SHOULD/MAY results remain visible but do not directly fail the overall verdict.
+## Achilles-AI 在哪里？
 
-### Integrity model
-
-Every experiment takes before/after snapshots and uses native filesystem events while the child process runs. Git repositories protect tracked files, sealed artifacts, and `.verification/**`; non-Git repositories protect every file that existed at seal time. A protected file modified and then restored still makes the evidence inconclusive. New untracked build outputs are allowed but reported.
-
-Plan, profile, baseline, generated test, stdout, stderr, event-log, and evidence digests are bound through `seal.json` and the evidence hash chain in `ledger.json`. Drift makes `status` report `STALE` and prevents an old PASS. Artifact schema v0 remains readable for audit, but its overall verdict is forced to `UNKNOWN`.
-
-### Demos
-
-The fixtures under `examples/` cover three outcomes:
-
-- `pass_cli`: valid JSON behavior, producing PASS.
-- `fail_cli`: an intentional single-quote JSON bug, producing FAIL from a real test failure.
-- `unknown_cli`: a visual-quality HUMAN obligation with no reliable machine oracle, producing UNKNOWN.
-
-After installation, or with `PYTHONPATH=src` in development:
-
-```bash
-python -B examples/run_demos.py
+```text
+User Goal
+    ↓
+Coding Agent
+    ↓
+Implementation
+    ↓
+Achilles-AI
+    ↓
+Evidence-backed Acceptance
 ```
 
-The runner copies each fixture to a temporary directory, performs the complete goal → plan → evidence → report flow, checks the expected verdict, and prints each report path.
+Coding Agent 解决：
 
-### Tests
+> **How do I implement this?**
 
-The test suite uses `unittest` and `watchdog` for cross-platform filesystem events:
+Achilles-AI 解决：
 
-```bash
-python -B -m unittest discover -s tests -v
+> **How do I know it was actually implemented?**
+
+你也可以把它理解成：
+
+> **Intent-Driven CI for AI Coding Agents.**
+
+---
+
+## 当前边界
+
+Achilles-AI 当前不是：
+
+* Coding Agent
+* 自动修复工具
+* Security Sandbox
+* Formal Verifier
+* 完整 CI 平台
+
+它只专注于一件事：
+
+> **在 Agent 说“Done”和任务真正被接受之间，建立一个基于证据的验证层。**
+
+`PASS` 也不意味着软件在所有输入和环境下都绝对正确。
+
+它只表示：
+
+> **当前声明的 requirements，在当前 verification plan 和环境下，已经获得足够证据支持。**
+
+---
+
+# English
+
+## AI can write the code. But did it actually finish the job?
+
+Modern coding agents can modify code, run tests, fix failures, and finally report:
+
+> **"Done. All tests pass."**
+
+But:
+
+```text
+Tests Passed ≠ Goal Satisfied
 ```
 
-It covers seal drift, all four oracle kinds, command capture, transient source changes, generated build output, payload/ledger tampering, legacy downgrade, CLI flows, and verdict aggregation.
+Existing tests may not cover the new requirement.
+
+Backward compatibility may never be checked.
+
+Performance claims may never be measured.
+
+**Achilles-AI verifies the completion claims made by AI Coding Agents.**
+
+---
+
+## What is Achilles-AI?
+
+Achilles-AI is a:
+
+> **Goal-Driven Acceptance Layer for AI Coding Agents.**
+
+Give it a natural-language goal:
+
+```text
+Add a --json option.
+
+Its output must be valid JSON.
+
+Existing default CLI behavior must remain unchanged.
+```
+
+Achilles-AI turns it into:
+
+```text
+Natural-language Goal
+        ↓
+Atomic Requirements
+        ↓
+Verification Experiments
+        ↓
+Real Execution
+        ↓
+Auditable Evidence
+        ↓
+PASS / FAIL / PARTIAL / UNKNOWN
+```
+
+The goal is not to ask another LLM to read the code and say:
+
+> "Looks good to me."
+
+The goal is to determine:
+
+> **What needed to be proven, what was actually executed, and what evidence supports the final verdict.**
+
+---
+
+## Why Achilles-AI?
+
+### Verify Goals, Not Just Tests
+
+Traditional CI asks:
+
+```text
+Did the predefined tests pass?
+```
+
+Achilles-AI asks:
+
+```text
+Does the current repository actually satisfy
+the goal the user requested?
+```
+
+A goal such as:
+
+```text
+Add --json while preserving existing CLI behavior.
+```
+
+may become:
+
+```text
+R1  --json exists
+    → STATIC + RUNTIME
+
+R2  --json produces parseable JSON
+    → RUNTIME
+
+R3  default behavior remains compatible
+    → DIFFERENTIAL + TEST
+```
+
+Passing the existing test suite alone is not enough if there is no evidence for `R3`.
+
+---
+
+### From Claims to Evidence
+
+Typical self-verification:
+
+```text
+Write Code
+    ↓
+Run Some Tests
+    ↓
+"PASS"
+```
+
+Achilles-AI:
+
+```text
+Goal
+ ↓
+Requirements
+ ↓
+Verification Plan
+ ↓
+Real Commands
+ ↓
+stdout / stderr / exit code / timing / repo state
+ ↓
+Evidence
+ ↓
+Verdict
+```
+
+Instead of:
+
+```text
+"The agent says it works."
+```
+
+you get traceable evidence:
+
+```text
+R3 PASS
+  ↳ R3-O1 supported by E0006
+  ↳ R3-O2 supported by E0007
+```
+
+---
+
+### Avoid False PASS
+
+Achilles-AI uses four verdicts:
+
+| Verdict   | Meaning                                                     |
+| --------- | ----------------------------------------------------------- |
+| `PASS`    | Mandatory verification obligations have sufficient evidence |
+| `FAIL`    | Explicit failing or contradictory evidence exists           |
+| `PARTIAL` | Only part of the required evidence is available             |
+| `UNKNOWN` | Available evidence is insufficient for a reliable decision  |
+
+For a verification system:
+
+> **UNKNOWN is better than False PASS.**
+
+If the environment is unavailable, no trustworthy baseline exists, or no reliable oracle can be constructed, Achilles-AI preserves the uncertainty instead of manufacturing success.
+
+---
+
+## Where is it useful?
+
+Achilles-AI works best for goals with observable behavior.
+
+### CLI / API
+
+```text
+Add --json and ensure the output is valid JSON.
+```
+
+```text
+Add a /health endpoint that returns HTTP 200.
+```
+
+### Compatibility
+
+```text
+The new implementation must not change existing CLI output.
+```
+
+### Numerical Computing
+
+```text
+GPU output must stay within 1% average error
+of the CPU reference.
+```
+
+### Performance
+
+```text
+P95 latency must remain below 100 ms.
+```
+
+### Build / Runtime / Filesystem
+
+```text
+The project must compile successfully.
+```
+
+```text
+Execution must produce the required directory structure.
+```
+
+---
+
+## Quick Start
+
+### 1. Install
+
+Requirements:
+
+* Python 3.11+
+* Git
+
+Install as a Codex Skill:
+
+```bash
+git clone https://github.com/cat686/Achilles-AI.git ~/.codex/skills/achilles-ai
+python -m pip install -e ~/.codex/skills/achilles-ai
+
+verify --help
+```
+
+Start a new Codex conversation after installation so `$achilles-ai` becomes available.
+
+---
+
+### 2. Verify a Project
+
+Enter your repository:
+
+```bash
+cd your-project
+```
+
+Then ask Codex:
+
+```text
+Use $achilles-ai to verify:
+
+Goal:
+Add a --json option.
+Its output must be valid JSON.
+Existing default CLI behavior must remain unchanged.
+```
+
+Achilles-AI will:
+
+```text
+Understand Goal
+      ↓
+Inspect Repository
+      ↓
+Generate Requirements
+      ↓
+Design Verification Experiments
+      ↓
+Execute Real Commands
+      ↓
+Capture Evidence
+      ↓
+Produce Verdict
+```
+
+---
+
+### 3. Inspect the Result
+
+```bash
+verify status
+```
+
+Full report:
+
+```text
+.verification/report.md
+```
+
+Main artifacts:
+
+```text
+.verification/
+├── plan.json
+├── seal-summary.md
+├── evidence/
+├── report.json
+└── report.md
+```
+
+---
+
+## Try the Real-World Examples
+
+Achilles-AI includes reference verification cases for Click and Cookiecutter.
+
+Install `uv`:
+
+```bash
+python -m pip install uv
+```
+
+Prepare the repositories:
+
+```bash
+python examples/setup_reference_projects.py
+```
+
+For Click:
+
+```bash
+cd examples/click
+```
+
+Then ask Codex:
+
+```text
+Use $achilles-ai to verify:
+
+Goal: On Python 3.12, run Click's complete official test suite
+using the dependencies locked by uv.lock and determine whether
+the repository satisfies this goal.
+```
+
+Inspect the result:
+
+```bash
+verify status
+```
+
+---
+
+## Where Achilles-AI Fits
+
+```text
+User Goal
+    ↓
+Coding Agent
+    ↓
+Implementation
+    ↓
+Achilles-AI
+    ↓
+Evidence-backed Acceptance
+```
+
+Coding agents answer:
+
+> **How do I implement this?**
+
+Achilles-AI answers:
+
+> **How do I know it was actually implemented?**
+
+A useful mental model is:
+
+> **Intent-Driven CI for AI Coding Agents.**
+
+---
+
+## Scope
+
+Achilles-AI is currently not:
+
+* a Coding Agent;
+* an automatic repair system;
+* a security sandbox;
+* a formal verifier;
+* a complete CI platform.
+
+It focuses on one thing:
+
+> **Building an evidence-backed boundary between "the agent says it's done" and "the task is actually accepted."**
+
+A `PASS` does not mean the software is universally correct.
+
+It means:
+
+> **The declared requirements are sufficiently supported under the current verification plan and environment.**
