@@ -1,0 +1,10 @@
+{
+  "build_commands": [],
+  "test_commands": [],
+  "run_commands": [],
+  "benchmark_commands": [],
+  "relevant_paths": [],
+  "discovered_from": ["goal.txt"],
+  "notes": ["No objective visual rubric or human assessment was supplied."]
+}
+

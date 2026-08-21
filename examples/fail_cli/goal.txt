@@ -1,0 +1,2 @@
+The CLI must emit valid JSON when invoked with --json.
+

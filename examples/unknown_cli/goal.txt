@@ -1,0 +1,2 @@
+The command-line output must be visually beautiful.
+

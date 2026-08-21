@@ -1,0 +1,19 @@
+[
+  {
+    "id": "R1",
+    "text": "The command-line output is visually beautiful",
+    "source_text": "The command-line output must be visually beautiful.",
+    "priority": "MUST",
+    "notes": "No objective visual-quality rubric was supplied.",
+    "obligations": [
+      {
+        "id": "R1-O1",
+        "type": "HUMAN",
+        "mandatory": true,
+        "description": "A human evaluates visual quality against a supplied rubric",
+        "planned_experiment": "No reliable automatic oracle is available in Version 0"
+      }
+    ]
+  }
+]
+

@@ -1,0 +1,20 @@
+{
+  "build_commands": [],
+  "test_commands": [
+    {
+      "command": "python -B test_acceptance.py",
+      "source": "test_acceptance.py"
+    }
+  ],
+  "run_commands": [
+    {
+      "command": "python -B app.py --json",
+      "source": "app.py"
+    }
+  ],
+  "benchmark_commands": [],
+  "relevant_paths": ["app.py", "test_acceptance.py"],
+  "discovered_from": ["app.py", "test_acceptance.py"],
+  "notes": []
+}
+

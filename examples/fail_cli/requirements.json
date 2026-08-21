@@ -1,0 +1,19 @@
+[
+  {
+    "id": "R1",
+    "text": "Invoking the CLI with --json emits valid JSON",
+    "source_text": "The CLI must emit valid JSON when invoked with --json.",
+    "priority": "MUST",
+    "notes": "",
+    "obligations": [
+      {
+        "id": "R1-O1",
+        "type": "TEST",
+        "mandatory": true,
+        "description": "A black-box test executes --json and parses stdout",
+        "planned_experiment": "Run the existing test_acceptance.py suite"
+      }
+    ]
+  }
+]
+
